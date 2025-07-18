@@ -4,7 +4,8 @@ using FFTW
 using Plots
 
 function main()
-    shkeebert = missing
+    test = log2(17)
+    test % 1 == 0 ? print("Integer") : print("Float")
 end
 
 

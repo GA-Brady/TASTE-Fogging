@@ -20,7 +20,7 @@ function gauss_matrix(σ::Union{Float64, Integer}, ΔX ::Union{Integer, Float64}
     =#
     partician = 3 * σ / ΔX
     n = round(Int, partician)
-    n = n % 2 == 0 ? n : n - 1 # reduces the size by 1 if the grid is even to properly center the data
+    n = n % 2 == 0 ? n : n - 1 # reduces the size by 1 if the grid is odd to properly center the data
 
     g_matrix = zeros(Float64, n,n)
 
@@ -36,18 +36,7 @@ function gauss_matrix(σ::Union{Float64, Integer}, ΔX ::Union{Integer, Float64}
     return g_matrix
 end
 
-function instantiate_dose_grid(θ::Union{Float64, Integer}, n::Integer, )
-    #=
-    in:
-        θ - energy ratio coefficient
-        n - array size
-    out:
-        D1 dose grid
-    =#
-
-end
-
-function main()
+function main_2()
     test_σ_back = 10
     test_ΔX = 1
 
@@ -69,6 +58,39 @@ function main()
     p1 = heatmap(patterned_g)
     savefig(p1, "figures/fft_heatmap.png")
 
+end
+
+function grid_padder(a::Matrix, pad::Integer, value::Union{Float64, Integer} = 0)
+    #=
+        padding function for matrices
+    =#
+    n, __ = size(a)
+
+    lower = round(Int, (pad-n) / 2) +1
+    upper = lower + n - 1
+
+    return collect(PaddedView(value, a, (1:pad, 1:pad), (lower:upper, lower:upper)))
+end
+
+function main()
+    n = 13 # microns (rescaling this number rescales the gridspec)
+    test_σb = 4 # microns
+    
+    # throw in a try-catch block to catch if kernel is bigger than gridspec
+
+    n = n % 2 == 0 ? n : n - 1 # reduces the size by 1 if the grid is odd to properly center the data
+    pad = nextpow(2, n)
+
+    pattern_mask = ones(Float64, n, n) # assuming that sigma forward < partician
+    dose_grid = ones(Float64, n, n)
+    g_matrix = gauss_matrix(test_σb, 1) # assuming that delta x = 1 micron
+
+    pad_mask = grid_padder(pattern_mask, pad)
+    pad_g = grid_padder(g_matrix, pad)
+
+    patterned_g = real.(ifft(fft(pad_mask) .* fft(pad_g)))
+    p1 = heatmap(patterned_g)
+    savefig(p1, "figures/fft_heatmap.png")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
