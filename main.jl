@@ -81,44 +81,107 @@ function converge_dose_grid(pad, iter, lower, upper, η, dose_grid, kernel, modi
     return dose_grid, corner_sample, center_sample
 end
 
+function fogging_grid_step(lower, upper, ζ, fogging_grid, fogging_kernel, pattern, initial_fogging)
+    fogging_grid_roi = fogging_grid[lower:upper, lower:upper]
+
+    conv = real.(ifft(fft(fogging_grid .* pattern) .* fft(fogging_kernel)))
+    conv_roi = conv[lower:upper, lower:upper]
+
+    ϵ = zeros(Float64, size(fogging_grid_roi))
+    ϵ = fogging_grid_roi .+ ζ .* conv_roi .- 1
+
+    f = .- ϵ + initial_fogging
+    F = fogging_grid_roi .+ f
+
+    return F
+end
+
+function converge_fogging_grid(pad, iter, lower, upper, ζ, fogging_grid, fogging_kernel, pattern, initial_fogging)
+    corner_sample = []
+    center_sample = []
+
+    n, _ = size(initial_fogging)
+    center = Int(floor(n / 2 ) + 1)
+
+    for i in 1:iter
+        println("Iterating step $i / $iter")
+        padded_fogging = grid_padder(fogging_grid, pad)
+        fogging_grid = fogging_grid_step(lower, upper, ζ,  padded_fogging, fogging_kernel, pattern, initial_fogging)
+        
+        push!(corner_sample, fogging_grid[2,2])
+        push!(center_sample, fogging_grid[center, center])
+    end
+
+    return fogging_grid, corner_sample, center_sample
+end
+
 function main()
     η = .2
+    ζ = .1
     n = 1000 # microns (rescaling this number rescales the gridspec)
     test_σb = 30 # microns
+    test_σf = 300 # microns
 
     pattern_mask = ones(Float64, n, n) # assuming that sigma forward < partician
-    g_matrix = gauss_matrix(test_σb, 1)# assuming that delta x = 1 micron
-    m, _ = size(g_matrix)
+    backscatter_kernel = gauss_matrix(test_σb, 1)# assuming that delta x = 1 micron
+    m, _ = size(backscatter_kernel)
     # throw in a try-catch block to catch if kernel is bigger than gridspec
 
     # n = n % 2 == 0 ? n : n - 1 # reduces the size by 1 if the grid is odd to properly center the data
     pad = nextpow(2, n + m - 1)
 
-    if pad == n
-        pad = nextpow(2, n+1) # bumps up the padding if n = pad so that there is a border for the pattern kernel
-    end
-
     println("Padding $n to $pad")
 
     pad_mask = grid_padder(pattern_mask, pad)
-    pad_g = ifftshift(grid_padder(g_matrix, pad))
+    pad_backscatter_kernel = ifftshift(grid_padder(backscatter_kernel, pad))
 
-    patterned_g = real.((ifft(fft(pad_mask) .* fft(pad_g))))
+    patterned_backscatter_kernel = real.((ifft(fft(pad_mask) .* fft(pad_backscatter_kernel))))
     
     lower = round(Int, (pad-n) / 2) + 1
     upper = lower + n - 1
     
     initial_dose = zeros(Float64, n, n)
-    initial_dose = (.5 .+ η) ./ (.5 .+ η .* (patterned_g[lower:upper, lower:upper]))
+    initial_dose = (.5 .+ η) ./ (.5 .+ η .* (patterned_backscatter_kernel[lower:upper, lower:upper]))
 
-    test, corner_sample, center_sample = converge_dose_grid(pad, 20, lower, upper, η, grid_padder(initial_dose, pad), pad_g, initial_dose)
+    proximity_correction, corner_sample, center_sample = converge_dose_grid(pad, 5, lower, upper, η, grid_padder(initial_dose, pad), pad_backscatter_kernel, initial_dose)
 
-    p1 = heatmap(test)
+    p1 = heatmap(proximity_correction)
+    savefig(p1, "figures/proximity_map.png")
     p2 = plot(corner_sample)
     p3 = plot(center_sample)
-    savefig(p1, "figures/fft_ifftshifted_heatmap.png")
-    savefig(p2, "figures/corner_sample.png")
-    savefig(p3, "figures/center_sample.png")
+    p4 = plot(p2, p3)
+    savefig(p4, "figures/convergence_test.png")
+
+    modified_pattern_density = .75 .* proximity_correction # only when P and F spacing the same - implement function later
+
+    fogging_kernel = gauss_matrix(test_σf, 1)
+    mf, _ = size(fogging_kernel) # gauss matrix returns a sqaure
+    
+    fog_padding = nextpow(2, n + mf -1)
+    println("Padding $n to $fog_padding for fogging convolution:")
+
+    pad_fogging_kernel = ifftshift(grid_padder(fogging_kernel, fog_padding))
+    pad_modified_pattern_density = grid_padder(modified_pattern_density, fog_padding)
+
+    fog_lower = Int(floor((fog_padding - n) / 2) + 1)
+    fog_upper = fog_lower + n - 1
+
+    convolved_pattern_density = real.(ifft(fft(pad_fogging_kernel) .* fft(pad_modified_pattern_density)))[fog_lower:fog_upper, fog_lower:fog_upper]
+    initial_fogging = 1 ./ (1 .+ ζ .* convolved_pattern_density)
+
+    fogging_correction, fogging_corner, fogging_center = converge_fogging_grid(fog_padding, 20, fog_lower, fog_upper, ζ, initial_fogging, pad_fogging_kernel, pad_modified_pattern_density, initial_fogging)
+
+    initial_fogging_heatmap = heatmap(fogging_correction)
+    savefig(initial_fogging_heatmap, "figures/initial_fogging.png")
+
+    p1 = plot(fogging_corner)
+    p2 = plot(fogging_center)
+    savefig(plot(p1, p2), "figures/fogging_convergence.png")
+
+    dose_correction = fogging_correction .* proximity_correction
+
+    savefig(heatmap(dose_correction), "figures/dose_correction.png")
+
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
